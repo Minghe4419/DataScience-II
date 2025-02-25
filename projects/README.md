@@ -1,0 +1,3 @@
+# Projects
+
+This folder contains two projects completed during Data Science II course...
