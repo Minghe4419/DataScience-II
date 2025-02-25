@@ -1,0 +1,24 @@
+---
+title: "ds2_homework1"
+author: "Minghe Wang"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+We predict the sale price of a house based on various characteristics. The training data are in “housing train.csv”, and the test data are in “housing test.csv”. The response is in the column “Sale price”, and other variables can be used as predictors. The variable definitions can be found in “dictionary.txt”.
+
+## (a)
+
+
+
+## (b)
+
+## (c)
+
+## (d)
+
+## (e)
