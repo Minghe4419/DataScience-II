@@ -105,8 +105,10 @@ enet.fit_caret_1sePar <- train(Sale_Price ~ ., data = house_train,
 # cat("best lambda by caret:", enet.fit_glm$lambda.min) # 469.4281
 # cat("1se lambda by caret:", enet.fit_caret$bestTune$lambda) # 529.9206
 
-enet_pred_best <- predict(enet.fit_caret_bestPar, newdata = house_test, s = enet.fit_caret_bestPar$bestTune)
-enet_pred_1se <- predict(enet.fit_caret_1sePar, newdata = house_test, s = enet.fit_caret_1sePar$bestTune)
+enet_pred_best <- predict(enet.fit_caret_bestPar, newdata = house_test, 
+                          s = enet.fit_caret_bestPar$bestTune)
+enet_pred_1se <- predict(enet.fit_caret_1sePar, newdata = house_test, 
+                         s = enet.fit_caret_1sePar$bestTune)
 
 test_rmse_enet_min <- sqrt(mean((y_test - enet_pred_best)^2))
 test_rmse_enet_1se <- sqrt(mean((y_test - enet_pred_1se)^2))
