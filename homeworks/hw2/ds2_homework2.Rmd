@@ -1,0 +1,12 @@
+---
+title: "Homework 2"
+author: "Minghe Wang"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+In this exercise, we explore the use of nonlinear models to analyze the “College” dataset, which contains statistics from 565 U.S. colleges, as reported in a previous issue of U.S. News & World Report. The response variable is the out-of-state tuition (Outstate), and the predictors are:
