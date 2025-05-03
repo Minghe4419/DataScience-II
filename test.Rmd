@@ -1,0 +1,197 @@
+---
+title: "Untitled"
+author: "Minghe Wang"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+
+```{r cars}
+import numpy as np
+import pandas as pd
+
+# ---------------------------------------------------
+# Helper: Gaussian kernel function
+# ---------------------------------------------------
+def gaussian_kernel(X1, X2, b):
+    """
+    Compute the Gaussian kernel matrix between two sets of vectors.
+    
+    Parameters:
+      X1: array of shape (n1, d)
+      X2: array of shape (n2, d)
+      b: scalar parameter in the kernel
+      
+    Returns:
+      K: array of shape (n1, n2) where K[i,j] = exp(-||X1[i]-X2[j]||^2 / b)
+    """
+    # Compute squared Euclidean distances using broadcasting
+    X1_sq = np.sum(X1**2, axis=1).reshape(-1, 1)  # (n1, 1)
+    X2_sq = np.sum(X2**2, axis=1).reshape(1, -1)    # (1, n2)
+    dists = X1_sq + X2_sq - 2 * (X1 @ X2.T)
+    return np.exp(-dists / b)
+
+# ---------------------------------------------------
+# Gaussian Process Prediction Function
+# ---------------------------------------------------
+def gp_predict(X_train, y_train, X_test, b, sigma2):
+    """
+    Given training data and parameters b and sigma^2,
+    predict the output at test inputs using the GP mean.
+    
+    Parameters:
+      X_train: (n_train, d)
+      y_train: (n_train,)
+      X_test:  (n_test, d)
+      b:       kernel parameter
+      sigma2:  noise variance parameter
+      
+    Returns:
+      y_pred: predicted mean at test inputs (n_test,)
+    """
+    # Compute training kernel matrix K (n_train x n_train)
+    K_train = gaussian_kernel(X_train, X_train, b)
+    # Add noise variance to the diagonal
+    K_train_reg = K_train + sigma2 * np.eye(K_train.shape[0])
+    
+    # Compute cross-kernel between training and test points: (n_train x n_test)
+    K_star = gaussian_kernel(X_train, X_test, b)
+    
+    # Compute the predictive mean: μ(x_*) = k(x_*)^T (sigma2 I + K_train)^{-1} y_train.
+    # Solve linear system instead of explicit inverse.
+    alpha = np.linalg.solve(K_train_reg, y_train)
+    y_pred = K_star.T @ alpha
+    return (y_pred)
+
+# ---------------------------------------------------
+# Data Loading (adjust paths as needed)
+# ---------------------------------------------------
+# Here, we assume that you have files "X_train.csv", "y_train.csv", "X_test.csv", "y_test.csv"
+# If your data is in a different format or file, modify accordingly.
+# For example, if using pandas:
+# X_train = pd.read_csv("X_train.csv", header=None).values
+# y_train = pd.read_csv("y_train.csv", header=None).values.ravel()
+# X_test  = pd.read_csv("X_test.csv", header=None).values
+# y_test  = pd.read_csv("y_test.csv", header=None).values.ravel()
+
+# For demonstration, we assume these variables are already loaded.
+# (Replace the following lines with your actual data loading code.)
+X_train = np.genfromtxt("X_train.csv", delimiter=",")
+y_train = np.genfromtxt("y_train.csv", delimiter=",")
+X_test  = np.genfromtxt("X_test.csv", delimiter=",")
+y_test  = np.genfromtxt("y_test.csv", delimiter=",")
+
+# ---------------------------------------------------
+# Parameter grid
+# ---------------------------------------------------
+b_vals = c(5, 7, 9, 11, 13, 15)
+sigma2_vals = np.linspace(0.1, 1.0, 10)
+
+# To store RMSE results in a table: rows for sigma2, columns for b.
+rmse_table = np.zeros((len(sigma2_vals), len(b_vals)))
+
+# ---------------------------------------------------
+# Loop over parameter pairs, compute RMSE for test points
+# ---------------------------------------------------
+for i, sigma2 in enumerate(sigma2_vals):
+    for j, b in enumerate(b_vals):
+        # Predict on test set using current parameters
+        y_pred = gp_predict(X_train, y_train, X_test, b, sigma2)
+        # Compute RMSE on test set
+        rmse = np.sqrt(np.mean((y_test - y_pred)**2))
+        rmse_table[i, j] = rmse
+
+# ---------------------------------------------------
+# Display results in a table using pandas DataFrame
+# ---------------------------------------------------
+df = pd.DataFrame(rmse_table, index=[f"{s:.1f}" for s in sigma2_vals],
+                  columns=[str(b) for b in b_vals])
+df.index.name = "sigma^2"
+df.columns.name = "b"
+print("RMSE on Test Data for Each (b, sigma^2) Pair:")
+print(df)
+
+```
+
+
+```{r}
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Define the Gaussian kernel function
+def gaussian_kernel(X1, X2, b):
+    """
+    Computes the Gaussian kernel matrix between two sets of vectors.
+    For one-dimensional inputs, X1 and X2 should be of shape (n,1) and (m,1), respectively.
+    """
+    # Compute squared distances
+    X1_sq = np.sum(X1**2, axis=1).reshape(-1, 1)
+    X2_sq = np.sum(X2**2, axis=1).reshape(1, -1)
+    dists = X1_sq + X2_sq - 2 * (X1 @ X2.T)
+    return np.exp(-dists / b)
+
+# --------------------------------------------------
+# Load your training data
+# --------------------------------------------------
+# Replace these lines with your actual data-loading code.
+# For example, if your data are in CSV files:
+# X_train = np.genfromtxt("X_train.csv", delimiter=",")
+# y_train = np.genfromtxt("y_train.csv", delimiter=",")
+# Here we assume X_train has shape (N,d) and y_train has shape (N,).
+X_train = np.genfromtxt("X_train.csv", delimiter=",")
+y_train = np.genfromtxt("y_train.csv", delimiter=",")
+
+# --------------------------------------------------
+# Use only the 4th dimension (assuming 1-indexed 4th dimension; in Python, index 3)
+# --------------------------------------------------
+X_train_4 = X_train[:, 3].reshape(-1, 1)  # shape (N,1)
+
+# --------------------------------------------------
+# Set GP parameters
+# --------------------------------------------------
+b = 5
+sigma2 = 2
+
+# --------------------------------------------------
+# Compute the kernel matrix on the training set and add noise variance
+# --------------------------------------------------
+K_train = gaussian_kernel(X_train_4, X_train_4, b)
+K_reg = K_train + sigma2 * np.eye(K_train.shape[0])
+
+# --------------------------------------------------
+# Compute the predictive mean on the training set
+# --------------------------------------------------
+# For each training input x*, the GP predictive mean is
+#   μ(x*) = k(x*)^T (sigma^2 I + K_train)^{-1} y_train.
+# When predicting on the training points, we have k(x*) = K_train.
+alpha = np.linalg.solve(K_reg, y_train)
+y_pred = K_train @ alpha  # predicted mean for each training point
+
+# --------------------------------------------------
+# For visualization, sort the data by the 4th dimension
+# --------------------------------------------------
+sorted_indices = np.argsort(X_train_4.ravel())
+X_sorted = X_train_4[sorted_indices]
+y_sorted = y_train[sorted_indices]
+y_pred_sorted = y_pred[sorted_indices]
+
+# --------------------------------------------------
+# Plot the scatter plot of data and the GP predictive mean
+# --------------------------------------------------
+plt.figure(figsize=(8, 6))
+plt.scatter(X_train_4, y_train, color='blue', label='Data', alpha=0.7)
+plt.plot(X_sorted, y_pred_sorted, color='red', linewidth=2, label='GP Predictive Mean')
+plt.xlabel("4th Dimension (Car Weight)")
+plt.ylabel("y")
+plt.title("Gaussian Process Regression (b=5, σ²=2) on 4th Dimension")
+plt.legend()
+plt.show()
+
+```
+

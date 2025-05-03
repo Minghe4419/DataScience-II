@@ -7,6 +7,190 @@ output: pdf_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(splines)
+library(mgcv)
+library(earth)
+library(ggplot2)
+library(caret)
+library(bayesQR)
+library(pdp)
+```
+
+```{r}
+data(Prostate)
+summary(Prostate)
 ```
 
 In this exercise, we explore the use of nonlinear models to analyze the “College” dataset, which contains statistics from 565 U.S. colleges, as reported in a previous issue of U.S. News & World Report. The response variable is the out-of-state tuition (Outstate), and the predictors are:
+
+- Apps: Number of applications received
+-  Accept: Number of applications accepted
+-  Enroll: Number of new students enrolled
+-  Top10perc: Pct. new students from top 10% of H.S. class 
+-  Top25perc: Pct. new students from top 25% of H.S. class 
+-  F.Undergrad: Number of fulltime undergraduates
+-  P.Undergrad: Number of parttime undergraduates
+-  Room.Board: Room and board costs
+-  Books: Estimated book costs
+-  Personal: Estimated personal spending
+-  PhD: Pct. of faculty with Ph.D.’s
+-  Terminal: Pct. of faculty with terminal degree
+- perc.alumni: Pct. alumni who donate
+- Expend: Instructional expenditure per student 
+- Grad.Rate: Graduation rate
+-  S.F.Ratio: Student/faculty ratio
+
+Partition the dataset into two parts: training data (80%) and test data (20%).
+
+```{r data clean}
+colleges <- read_csv("./College.csv")
+
+set.seed(123)
+train_indices <- createDataPartition(colleges$Outstate, p=0.8, list=FALSE)
+# n <- nrow(colleges)
+# train_indices <- sample(seq_len(n), size = 0.8 * n)
+train_data <- colleges[train_indices, ]
+test_data  <- colleges[-train_indices, ]
+train_data <- train_data[, -1]
+test_data <- test_data[, -1]
+
+y_train <- train_data$Outstate
+
+x <- model.matrix(Outstate ~ ., train_data)[, -1]
+y <- y_train
+
+theme1 <- trellis.par.get()
+theme1$plot.symbol$col <- rgb(.2, .4, .2, .5)
+theme1$plot.symbol$pch <- 16
+theme1$plot.line$col <- rgb(.8, .1, .1, 1)
+theme1$plot.line$lwd <- 2
+theme1$strip.background$col <- rgb(.0, .2, .6, .2)
+# Set the modified parameters as the global style for the trellis graph
+trellis.par.set(theme1)
+
+# svi and gleason were not included in the plot (they take discrete values)
+featurePlot(x, y, plot = "scatter", labels = c("", "Y"),
+            type = c("p"), layout = c(3, 2))
+```
+**Note** Most partial scatter plot does not indicate a clear linearity between predictors and response variable `Ourstate`
+
+(a) Fit smoothing spline models to predict out-of-state tuition (`Outstate`) using the percentage of alumni who donate (`perc.alumni`) as the only predictor, across a range of degrees of freedom. Plot the fitted curve for each degree of freedom. Describe the patterns you observe as the degrees of freedom change. Choose an appropriate degree of freedom for the model and plot this optimal fit. Explain the criteria you used to select the degree of freedom.
+
+```{r a}
+x_train <- train_data$perc.alumni
+y_train <- train_data$Outstate
+
+dfs <- seq(2, 10, by = 1)
+pred_all <- data.frame()
+p <- ggplot(data = train_data, aes(x = perc.alumni, y = Outstate)) + geom_point(color =rgb(.2, .4, .2, .5))
+
+x_train.grid <- seq(-10, 80, 1)
+
+for (i in seq_along(dfs)) {
+  fit.ss <- smooth.spline(train_data$perc.alumni, train_data$Outstate, df = dfs[i], cv = TRUE)
+  pred <- predict(fit.ss, x_train.grid)
+  pred_tmp <- data.frame(perc.alumni = x_train.grid, 
+                         pred = pred$y, 
+                         df = factor(dfs[i]))  # Convert df to factor for a proper legend
+  pred_all <- rbind(pred_all, pred_tmp)
+}
+
+# Add the smoothing lines with color mapped to the degree of freedom
+p <- p + geom_line(data = pred_all, 
+                   aes(x = perc.alumni, y = pred, color = df), 
+                   size = 1)
+
+# Optionally, add a title and theme adjustments
+p + labs(title = "Smoothing Splines for Outstate vs. perc.alumni",
+         color = "Degrees of Freedom",
+         x = "perc.alumni",
+         y = "Outstate")
+
+# Select the optimal degree of freedom using cross-validation
+x_train.grid <- seq(-10, 80, 1)
+fit_optim <- smooth.spline(x_train, y_train, cv = TRUE)
+pred_optim <- predict(fit_optim, x_train.grid)
+optimal_df <- fit_optim$df
+cat("Optimal degrees of freedom selected by CV:", optimal_df, "\n")
+
+pred.ss.df_optim <-data.frame(pred = pred_optim$y, prec.alumni = x_train.grid)
+ggplot(data = train_data, aes(x = perc.alumni, y = Outstate)) + 
+  geom_point(color =rgb(.2, .4, .2, .5)) +
+  geom_line(aes(x = prec.alumni, y = pred), data = pred.ss.df_optim, color = rgb(.8, .1, .1, 1)) + 
+  theme_bw()
+
+
+
+```
+**Answer** From the scatter plot of `prec.alumni` vs `Outstate`, we cannot observe a clear trend of linearity. Then we use smoothing spline to plot the smooth curve for our data, it shows that as degree of freedom increases, the regression line would be more fit out scattered data, which is more wiggled. The range of degree of freedom we choose is from `r min(dfs)` to `r max(dfs)` so that we can observe straight regression lines when dof are low and wiggled lines when dof are high. We use the built-in GCV to select an optimal degree of freedom (= `r round(optimal_df, 2)`), the regression line with optimal dof indicates a linear relationship between x and y.
+
+(b) Train a multivariate adaptive regression spline (MARS) model to predict the response variable. Report the regression function. Present the partial dependence plot of an arbitrary predictor in your model. Report the test error.
+
+```{r , cache=TRUE}
+library(plotmo)
+ctrl1 <-trainControl(method = "cv", number = 10)
+set.seed(123)
+mars_grid <-expand.grid(degree = 1:3,nprune = 2:20)
+x <- model.matrix(Outstate ~ . , train_data)
+y <- y_train
+mars.fit <- train(x, y, 
+                 method = "earth", 
+                 tuneGrid = mars_grid, 
+                 trControl = ctrl1)
+ggplot(mars.fit)
+mars.fit$bestTune
+coef(mars.fit$finalModel)
+
+bestMARS <- mars.fit$finalModel
+summary(bestMARS)
+plotmo(bestMARS, 
+        nresponse = 1,
+        degree2 = FALSE,
+        varnames = "Apps"
+)
+        
+x_test <- model.matrix(Outstate ~ . , test_data)[, -1]
+mars_preds <- predict(bestMARS, newdata = x_test) 
+test_mse <- mean((mars_preds - test_data$Outstate)^2) 
+test_rmse <- sqrt(test_mse)
+cat("Test RMSE:", test_rmse, "\n")
+```
+**Answer** We use 10 fold cross validation process to select the best MARS regression model, which is shown above. The model has nprune = `r mars.fit$bestTune[1, 1]` and degree = `r mars.fit$bestTune[1, 2]`, indicating this is a additive-only, 16 basis function MARS model. The partial dependence plot shows that several variables, such as `PhD`, `Books`, etc, contribute to prediction is negligible after considering more dominant variables, while few variables like `Apps` is clearly influencing the prediction (eg. positively). Test RMSE of the MARS model is `r test_rmse`
+
+(c) Construct a generalized additive model (GAM) to predict the response variable. For the nonlinear terms included in your model, generate plots to visualize these relationships and discuss your observations. Report the test error.
+
+```{r , cache=TRUE}
+set.seed(2)
+gam.fit <-train(x, y, 
+                method = "gam", 
+                trControl = ctrl1)
+
+bestGAM <- gam.fit$finalModel
+bestGAM
+par(mfrow=c(2,2))
+plot(bestGAM, se = TRUE, col = "blue")
+gam_preds <- predict(bestGAM, newdata=test_data) 
+gam_mse <- mean((gam_preds - test_data$Outstate)^2) 
+gam_rmse <- sqrt(gam_mse)
+gam_rmse
+```
+**Answer** The GAM model identified several variables exhibiting clear non-linear relationships with Out-of-state tuition. Notably, `Expend`, `F.Undergrad`, `Accept`, and `Apps` showed significant non-linear effects. With expenditures having the most pronounced impacts. Other variables, including percentage of alumni donors, student-faculty ratio, and graduation rates, displayed relatively flat smooth functions, suggesting minimal effect on tuition after controlling for other variables. Test RMSE of GAM model is `r gam_rmse`
+
+(d) In this dataset, would you favor a MARS model over a linear model for predicting out-of- state tuition? If so, why? More broadly, in general applications, do you consider a MARS model to be superior to a linear model? Please share your reasoning.
+
+```{r}
+set.seed(123)
+# Fit a linear model
+lm_model <- lm(Outstate ~ ., data = train_data) 
+# Perform prediction
+lm_preds <- predict(lm_model, newdata = test_data)
+# Calculate test error
+lm_rmse <- sqrt(mean((lm_preds - test_data$Outstate)^2)) 
+lm_rmse
+test_rmse
+```
+
+**Answer** For predicting out-of-state tuition in the College dataset, the MARS model appears to offer significant advantages by flexibly modeling non-linearities and interactions. In this context, I would favor the MARS model over a simple linear model if it demonstrates lower test error and captures important variable relationships that a linear model overlooks. 
+
+More broadly, while MARS can be superior in cases where the underlying relationships are complex, the choice between a MARS model and a linear model should be guided by the specific characteristics (eg. linearity) of the data and the balance between interpretability and prediction accuracy.

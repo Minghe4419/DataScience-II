@@ -1,0 +1,199 @@
+---
+title: "ds2_hw4"
+author: "Minghe Wang"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(dplyr)
+library(caret)
+library(tidymodels)
+library(rpart)
+library(rpart.plot)
+library(party)
+library(partykit)
+library(pROC)
+library(randomForest)
+library(ranger) 
+library(gbm) 
+library(pdp)
+```
+
+```{r load_data}
+colleges <- read_csv("./College.csv")
+head(colleges)
+```
+
+# 1
+```{r}
+data_split <- initial_split(colleges, prop = 0.8)
+training_data <- training(data_split)
+testing_data <- testing(data_split)
+training_data <- training_data[, -1]
+test_dataing <- testing_data[, -1]
+```
+
+
+## a
+```{r}
+ctrl <- trainControl(method = "cv")
+
+set.seed(1)
+rpart.fit <- train(Outstate ~ .,
+                   training_data,
+                   method = "rpart",
+                   tuneGrid = data.frame(cp = exp(seq(-8,-1, length = 100))), 
+                   trControl = ctrl)
+
+pred_rpart <- predict(rpart.fit, newdata = testing_data)
+summary(pred_rpart)
+head(pred_rpart)
+
+plot(rpart.fit, xTrans = log)
+
+rpart.plot(rpart.fit$finalModel)
+```
+
+## b
+```{r}
+
+ctrl <- trainControl(method = "cv")
+rf.grid <- expand.grid(mtry = 1:12,
+                       splitrule = "variance",
+                       min.node.size = 2:8)
+
+set.seed(1)
+rf.fit <- train(Outstate ~ . ,
+                data = training_data,
+                method = "ranger",
+                tuneGrid = rf.grid,
+                trControl = ctrl)
+
+ggplot(rf.fit, highlight = TRUE)
+
+set.seed(1)
+rf.final.imp <- ranger(Outstate ~ . , 
+                        data = training_data,
+                        mtry = rf.fit$bestTune[[1]], 
+                        splitrule = "variance",
+                        min.node.size = rf.fit$bestTune[[3]],
+                        importance = "impurity")
+
+ranger::importance(rf.final.imp)
+
+barplot(sort(ranger::importance(rf.final.imp), decreasing = FALSE), 
+        las = 2, horiz = TRUE, cex.names = 0.7,
+        col = colorRampPalette(colors = c("cyan","blue"))(19))
+
+pred_rf <- predict(rf.fit, newdata = testing_data)
+rmse_rf <- RMSE(pred_rf, testing_data$Outstate)
+rmse_rf
+```
+Expend is the most importance variable, the Terminal is the second importance, and the rest are odered in a descending way.
+
+The test error is `r rmse_rf`.
+
+## c
+```{r}
+gbm.grid <- expand.grid(n.trees = c(100,200,500,1000,2000,5000,10000),
+                        interaction.depth = 1:5,
+                        shrinkage = c(0.005,0.01,0.05),
+                        n.minobsinnode = c(15))
+
+set.seed(1)
+gbm.fit <- train(Outstate ~ . ,
+                 data = training_data,
+                 method = "gbm",
+                 tuneGrid = gbm.grid,
+                 trControl = ctrl,
+                 verbose = FALSE
+                 )
+ggplot(gbm.fit, highlight = TRUE)
+
+summary(gbm.fit$finalModel, las = 2, cBars = 19, cex.names = 0.6)
+
+pred_gbm <- predict(gbm.fit, newdata = testing_data)
+rmse_gbm <- RMSE(pred_rf, testing_data$Outstate)
+rmse_gbm
+```
+The expend is the most important variable, and the Room.Board is the second important, the rest are ordered in a descending way.
+
+The test error is `r rmse_gbm`.
+# 2
+
+```{r}
+auto <- read_csv("./auto.csv")
+auto <- na.omit(auto)
+auto$origin <- as.factor(auto$origin)
+auto$mpg_cat <- factor(auto$mpg_cat, c("high", "low"))
+
+set.seed(1)
+
+auto_split <- initial_split(auto, prop = 0.7) 
+training_dat <- training(auto_split) 
+testing_dat <- testing(auto_split)
+```
+
+## a
+
+```{r}
+set.seed(1)
+c_tree <- rpart(formula = mpg_cat ~ . ,
+                    data = training_dat,
+                    control = rpart.control(cp = 0))
+cpTable <- printcp(c_tree)
+
+plotcp(c_tree)
+
+min_error_ind <- which.min(c_tree$cptable[, "xerror"]) 
+best_size <- c_tree$cptable[min_error_ind, "nsplit"] + 1 
+best_size
+
+
+one_se_ind <- which(c_tree$cptable[, "xerror"] <= c_tree$cptable[min_error_ind, "xerror"] + c_tree$cptable[min_error_ind, "xstd"])[1]
+
+one_se_size <- c_tree$cptable[one_se_ind, "nsplit"] + 1
+one_se_size
+```
+The tree size corresponding to the lowest CV error is `r best_size`, which is different from the 1SE CV error's tree size `r one_se_size`.
+
+## b
+
+```{r}
+bst.grid <- expand.grid(n.trees = c(100,200,500,1000,2000,5000,10000),
+                         interaction.depth = 1:5,
+                         shrinkage = c(0.001, 0.003, 0.005),
+                         n.minobsinnode = 5)
+set.seed(1)
+ctrl <- trainControl(method = "cv", classProbs = TRUE)
+bst.fit <- train(mpg_cat ~ . ,
+                  training_dat,
+                  tuneGrid = bst.grid,
+                  trControl = ctrl,
+                  method = "gbm",
+                  distribution = "adaboost",
+                  metric = "ROC",
+                  verbose = FALSE)
+
+ggplot(bst.fit, highlight = TRUE)
+
+summary(bst.fit$finalModel,las=2,cBars=19,cex.names=0.6)
+
+pred_bst <- predict(bst.fit, newdata = testing_dat, type = "prob")[,1] 
+roc_bst<-roc(testing_dat$mpg_cat, pred_bst)
+
+auc <- roc_bst$auc[1] 
+plot(roc_bst,col=2)
+
+pred_bst <- predict(bst.fit, newdata = testing_dat) 
+confusionMatrix(pred_bst, testing_dat$mpg_cat)
+```
+
+From the variable importance table, the displacement is the most important variable, the second is weight, and the rest are ordered in a descending way.
+
+According to the model performance metrics, auc = `r auc`, accuracy = `r confusionMatrix(pred_bst, testing_dat$mpg_cat)$overall[1]`, and both sensitivity and sepcificity are high in confusion matrix.
+Therefore, we believe the model perform well.

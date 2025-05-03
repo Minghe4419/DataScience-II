@@ -1,0 +1,171 @@
+---
+title: "ds2_hw3"
+author: "Minghe Wang"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(rsample)
+library(caret)
+library(pROC)
+library(MASS)
+library(glmnet)
+library(mlbench)
+library(pdp)
+library(vip)
+```
+
+```{r}
+auto <- read_csv("./auto.csv")
+str(auto)
+auto$origin <- as.factor(auto$origin)
+auto$cylinders <- as.factor(auto$cylinders)
+auto$mpg_cat <- as.factor(auto$mpg_cat)
+contrasts(auto$mpg_cat)
+auto <- na.omit(auto)
+
+set.seed(1)
+split_auto <- initial_split(auto, prop = 0.7)
+train <- training(split_auto) 
+test <- testing(split_auto)
+
+featurePlot(x = auto[, c("displacement", "horsepower", "weight", "acceleration", "year")], 
+            y = auto$mpg_cat,
+            scales = list(x = list(relation = "free"), 
+                          y = list(relation = "free")),
+            plot = "box")
+```
+
+# Q1
+
+```{r , warning=FALSE}
+ctrl <- trainControl(method = "cv", 
+                     number = 10, 
+                     summaryFunction = twoClassSummary,
+                     classProbs = TRUE)
+
+glmnetGrid <- expand.grid(.alpha = seq(0, 1, length = 21), .lambda = exp(seq(-5, 5, length = 50)))
+
+set.seed(1)
+model.glmnet <- train(x = train[1:7],
+                    y = train$mpg_cat, 
+                    method = "glmnet", 
+                    tuneGrid = glmnetGrid, 
+                    metric = "ROC",
+                    trControl = ctrl)
+
+model.glmnet$bestTune
+best_model.glmnet <- model.glmnet$finalModel
+
+myCol <- rainbow(25)
+myPar <- list(superpose.symbol = list(col = myCol),
+superpose.line = list(col = myCol))
+plot(model.glmnet, par.settings = myPar, xTrans = function(x) log(x))
+
+as.matrix(coef(best_model.glmnet, s = model.glmnet$bestTune$lambda))
+```
+According to our best model, only the `acceleration` is redundant since it's coefficient is exactly 0. The coefficient table represents the effect of each predictor on the probability of a car having high or low gas mileage. Although weight only have weak effect, we still consider it somewhat important.
+
+# B
+
+```{r, warning=FALSE}
+set.seed(1)
+model.mars <- train(x = train[1:7],
+                    y = train$mpg_cat, 
+                    method = "earth", 
+                    tuneGrid = expand.grid(degree = 1:5,
+                                           nprune = 2:25), 
+                    metric = "ROC",
+                    trControl = ctrl)
+model.mars$bestTune
+summary(model.mars)
+vip(model.mars$finalModel, type = "nsubsets")
+vip(model.mars$finalModel, type = "rss")
+plot(model.mars)
+
+
+glmnet_pred <- predict(model.glmnet, newdata = test, type = "prob")[,2] 
+mars_pred <- predict(model.mars, newdata = test, type = "prob")[,2]
+roc_glmnet <- roc(test$mpg_cat, glmnet_pred) 
+roc_mars <- roc(test$mpg_cat, mars_pred)
+# Compute AUC for both models
+auc_glmnet <- auc(roc_glmnet)
+auc_mars <- auc(roc_mars)
+
+auc <- c(roc_glmnet$auc[1], 
+         roc_mars$auc[1])
+modelNames <- c("GLMNet","MARS")
+ggroc(list(roc_glmnet, roc_mars), legacy.axes = TRUE) + 
+  scale_color_discrete(labels = paste0(modelNames, " (", round(auc,3),")"),
+                       name = "Models (AUC)") + 
+  geom_abline(intercept = 0, slope = 1, color = "grey")
+
+print(paste("AUC for glmnet model: ", auc_glmnet))
+print(paste("AUC for MARS model: ", auc_mars))
+```
+The best MARS model, has interaction terms order up to 1 and uses 6 basis function, does not contains complex relationship. `Origin` and some categories of `cylinders` are not used and `cylinders4` is the most influential(most frequent value group among the factor predictor) predictor in this model. The prediction performance by ROC AUC are higher for glmnet than MARS model, indicating no significant improvement on prediction when using MARS model.
+
+# C
+
+```{r, warning=FALSE}
+set.seed(1)
+lda.fit <- lda(mpg_cat~., data = train)
+
+plot(lda.fit)
+
+lda.scaling <- lda.fit$scaling
+lda.scaling
+
+train$Z <- predict(lda.fit, newdata = train[, 1:7])$x
+
+ggplot(train, aes(x = Z, fill = mpg_cat)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "LDA Discriminant Score by Class",
+       x = "LD1: Z = a^T X",
+       y = "Density")
+```
+The distribution of predicted response groups(high vs low mpg_cat) are overall symmetric centered at 0. There are some outliers within high mpg-cat group but they are neglegible.
+
+# D
+
+```{r}
+set.seed(1)
+model.lda <- train(mpg_cat ~ cylinders + displacement + horsepower + weight + acceleration + year + origin,
+                    data = train,
+                    method = "lda",
+                    metric = "ROC",
+                    trControl = ctrl)
+
+res <- resamples(list(GLMNET = model.glmnet, 
+                      MARS = model.mars,
+                      LDA = model.lda))
+summary(res)
+bwplot(res, metric = "ROC")
+
+
+# modelNames <- c("GLMNet","MARS","LDA")
+# ggroc(list(roc_glmnet, roc_mars,roc_lda), legacy.axes = TRUE) + 
+#   scale_color_discrete(labels = paste0(modelNames, " (", round(auc,3),")"),
+#                        name = "Models (AUC)") + 
+#   geom_abline(intercept = 0, slope = 1, color = "grey")
+```
+According to resampling, MARS has the best overall performance (highest on avg ROC AUC, specificity) and well recognize the pattern of low mpg_cat response. Therefore, we select MARS model to compute the confusion matrix and further analysis.
+
+```{r}
+plot(roc_mars, legacy.axes = TRUE, print.auc = TRUE)
+plot(smooth(roc_mars), col = 4, add = TRUE)
+mtext("ROC Curve of MARS on Test Set", side = 3, line = 2,cex=1)
+
+glmn.class <- ifelse(mars_pred > 0.5, "low", "high")
+glmn.class <- factor(glmn.class, levels = levels(test$mpg_cat))
+confusionMatrix(glmn.class, test$mpg_cat)
+
+```
+
+We select MARS model as the final model because of it has highest average ROC score based on the resampling results. It  indicates that MARS was better at distinguishing between high and low mpg groups.
+
+Then we plot MARS model's ROC curve and its AUC(=0.97) and confusion matrix metrics (we choose 0.5 as threshold according to observation from section C): MARS has relatively high accuracy in prediction(=91.53%) and reliable confidence interval; it also has 94.74% of actual high-mileage cars were correctly predicted as high and 88.52% of actual low-mileage cars were correctly predicted as low. Kappa Statistic(=0.8307) indicates strong agreement between the predicted and actual classifications. Overall, MARS is our best model.

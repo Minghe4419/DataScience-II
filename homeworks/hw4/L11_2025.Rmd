@@ -1,0 +1,403 @@
+---
+title: "Ensemble Methods"
+author: "Yifei Sun, Runze Cui, Chenshuo Pan"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 2
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '2'
+header-includes:
+- \usepackage{fancyhdr}
+- \usepackage{lipsum}
+- \pagestyle{fancy}
+- \fancyhead[R]{\thepage}
+- \fancypagestyle{plain}{\pagestyle{fancy}}
+editor_options: 
+  chunk_output_type: console
+--- 
+
+\newpage
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r, echo = T, message = FALSE, results='hide', warning=FALSE}
+library(tidyverse)
+library(ISLR)
+library(mlbench)
+library(caret)
+library(tidymodels)
+library(randomForest)
+library(ranger)
+library(gbm)
+library(pdp)
+library(pROC)
+```
+
+# Regression
+
+Predict a baseball player’s salary on the basis of various statistics associated with performance in the previous year. 
+
+```{r}
+data(Hitters)
+Hitters <- na.omit(Hitters)
+
+set.seed(2025)
+data_split <- initial_split(Hitters, prop = 0.8)
+
+# Extract the training and test data
+training_data <- training(data_split)
+testing_data <- testing(data_split)
+```
+
+## Bagging and Random forests
+
+The function `randomForest()` implements Breiman's random forest algorithm (based on Breiman and Cutler's original Fortran code) for classification and regression. `ranger()` is a fast implementation of Breiman's random forests, particularly suited for high dimensional data.
+
+```{r}
+set.seed(1)
+bagging <- randomForest(Salary ~ . , 
+                        data = training_data,
+                        mtry = 19)
+
+set.seed(1)
+rf <- randomForest(Salary ~ . , 
+                   data = training_data,
+                   mtry = 6)
+
+# fast implementation
+set.seed(1)
+rf2 <- ranger(Salary ~ . , 
+              data = training_data,
+              mtry = 6) 
+
+pred.rf <- predict(rf, newdata = testing_data)
+pred.rf2 <- predict(rf2, data = testing_data)$predictions
+
+RMSE(pred.rf, testing_data$Salary)
+RMSE(pred.rf2, testing_data$Salary)
+```
+
+
+## Boosting
+
+We first fit a gradient boosting model with Gaussian loss function.
+
+```{r}
+set.seed(1)
+bst <- gbm(Salary ~ . , 
+           data = training_data,
+           distribution = "gaussian",
+           n.trees = 5000, 
+           interaction.depth = 2, # the maximum depth of each tree
+           shrinkage = 0.005,
+           cv.folds = 10)
+```
+
+We plot loss function as a result of number of trees added to the ensemble.
+
+```{r}
+gbm.perf(bst, method = "cv")
+```
+
+
+## Grid search using `caret`
+
+We use the fast implementation of random forest when tuning the model.
+
+```{r}
+ctrl <- trainControl(method = "cv") 
+
+# Try more if possible
+rf.grid <- expand.grid(mtry = 1:19,
+                       splitrule = "variance",
+                       min.node.size = 1:6)
+set.seed(1)
+rf.fit <- train(Salary ~ . , 
+                data = training_data, 
+                method = "ranger",
+                tuneGrid = rf.grid,
+                trControl = ctrl)
+
+ggplot(rf.fit, highlight = TRUE)
+```
+
+We then tune the `gbm` model.
+
+```{r}
+# Try more 
+gbm.grid <- expand.grid(n.trees = c(100,200,500,1000,2000,5000,10000),
+                        interaction.depth = 1:4,
+                        shrinkage = c(0.005,0.01,0.05),
+                        n.minobsinnode = c(10))
+
+set.seed(1)
+gbm.fit <- train(Salary ~ . , 
+                 data = training_data, 
+                 method = "gbm",
+                 tuneGrid = gbm.grid,
+                 trControl = ctrl,
+                 verbose = FALSE # whether to display detailed information during training
+                 )
+
+ggplot(gbm.fit, highlight = TRUE)
+```
+
+It takes a while to train the `gbm` even with a rough tuning grid. The `xgboost` package provides an efficient implementation of gradient boosting framework (approximately 10x faster than `gbm`). You can find much useful information here: https://github.com/dmlc/xgboost/tree/master/demo.
+
+Compare the cross-validation performance. You can also compare with other models that we fitted before.
+
+```{r}
+resamp <- resamples(list(rf = rf.fit, gbm = gbm.fit))
+summary(resamp)
+```
+
+
+## Global interpretation
+### Variable importance
+
+We can extract the variable importance from the fitted models. In what follows, the first measure is computed from permuting OOB data. The second measure is the total decrease in node impurities from splitting on the variable, averaged over all trees. For regression, node impurity is measured by residual sum of squares.
+
+```{r}
+set.seed(1)
+
+rf2.final.per <- ranger(Salary ~ . , 
+                        data = training_data,
+                        mtry = rf.fit$bestTune[[1]], 
+                        splitrule = "variance",
+                        min.node.size = rf.fit$bestTune[[3]],
+                        importance = "permutation",
+                        scale.permutation.importance = TRUE) 
+
+barplot(sort(ranger::importance(rf2.final.per), decreasing = FALSE), 
+        las = 2, horiz = TRUE, cex.names = 0.7,
+        col = colorRampPalette(colors = c("cyan","blue"))(19))
+
+set.seed(1)
+rf2.final.imp <- ranger(Salary ~ . , 
+                        data = training_data,
+                        mtry = rf.fit$bestTune[[1]], 
+                        splitrule = "variance",
+                        min.node.size = rf.fit$bestTune[[3]],
+                        importance = "impurity") 
+
+barplot(sort(ranger::importance(rf2.final.imp), decreasing = FALSE), 
+        las = 2, horiz = TRUE, cex.names = 0.7,
+        col = colorRampPalette(colors = c("cyan","blue"))(19))
+```
+
+Variable importance from boosting can be obtained using the `summary()` function.
+
+```{r}
+summary(gbm.fit$finalModel, las = 2, cBars = 19, cex.names = 0.6)
+```
+
+### Partial dependence plots 
+
+After the most relevant variables have been identified, the next step is to attempt to understand how the response variable changes based on these variables. For this we can use partial dependence plots (PDPs).
+
+PDPs plot the change in the average predicted value as specified feature(s) vary over their marginal distribution. The PDP plot below displays the average change in predicted `Salary` as we vary `CHits`.
+
+```{r}
+p1 <- partial(rf.fit, pred.var = "CHits", 
+              plot = TRUE, rug = TRUE, 
+              plot.engine = "ggplot") + ggtitle("PDP (RF)")
+p2 <- partial(gbm.fit, pred.var = "CHits", 
+              plot = TRUE, rug = TRUE, 
+              plot.engine = "ggplot") + ggtitle("PDP (GBM)")
+gridExtra::grid.arrange(p1, p2, nrow = 1)
+```
+
+
+
+
+# Classification
+
+We use the Pima Indians Diabetes Database for illustration. The data contain 768 observations and 9 variables. The outcome is a binary variable `diabetes`. 
+
+```{r}
+data(PimaIndiansDiabetes)
+dat <- PimaIndiansDiabetes
+dat$diabetes <- factor(dat$diabetes, c("pos", "neg"))
+
+set.seed(2022)
+data_split <- initial_split(dat, prop = 2/3)
+
+training_data_1 <- training(data_split)
+testing_data_1 <- testing(data_split)
+```
+
+
+## Bagging and random forests
+
+```{r}
+set.seed(1)
+bagging <- randomForest(diabetes ~ . , 
+                        training_data_1,
+                        mtry = 8)
+
+set.seed(1)
+rf <- randomForest(diabetes ~ . , 
+                   training_data_1,
+                   mtry = 3)
+
+set.seed(1)
+rf2 <- ranger(diabetes ~ . , 
+              training_data_1,
+              mtry = 3, 
+              probability = TRUE) 
+
+rf.pred <- predict(rf, newdata = testing_data_1, type = "prob")[,1]
+rf2.pred <- predict(rf2, data = testing_data_1, type = "response")$predictions[,1]
+```
+
+## Boosting
+
+```{r}
+training_data_2 <- training_data_1
+training_data_2$diabetes <- as.numeric(training_data_1$diabetes == "pos")
+
+set.seed(1)
+bst <- gbm(diabetes ~ . , 
+           training_data_2,
+           distribution = "adaboost",
+           n.trees = 2000, 
+           interaction.depth = 2,
+           shrinkage = 0.005,
+           cv.folds = 10)
+
+gbm.perf(bst, method = "cv")
+```
+
+## Grid search using `caret`
+
+### Random forests
+
+```{r}
+ctrl <- trainControl(method = "cv",
+                     classProbs = TRUE, 
+                     summaryFunction = twoClassSummary)
+
+rf.grid <- expand.grid(mtry = 1:8,
+                       splitrule = "gini",
+                       min.node.size = seq(from = 2, to = 16, by = 2))
+set.seed(1)
+rf.fit <- train(diabetes ~ . , 
+                training_data_1,
+                method = "ranger",
+                tuneGrid = rf.grid,
+                metric = "ROC",
+                trControl = ctrl)
+
+ggplot(rf.fit, highlight = TRUE)
+
+rf.pred <- predict(rf.fit, newdata = testing_data_1, type = "prob")[,1]
+```
+
+### AdaBoost
+
+```{r}
+gbmA.grid <- expand.grid(n.trees = c(100,200,500,1000,2000,5000,10000),
+                         interaction.depth = 1:5,
+                         shrinkage = c(0.001, 0.003, 0.005),
+                         n.minobsinnode = 10)
+set.seed(1)
+gbmA.fit <- train(diabetes ~ . , 
+                  training_data_1, 
+                  tuneGrid = gbmA.grid,
+                  trControl = ctrl,
+                  method = "gbm",
+                  distribution = "adaboost",
+                  metric = "ROC",
+                  verbose = FALSE)
+
+ggplot(gbmA.fit, highlight = TRUE)
+
+gbmA.pred <- predict(gbmA.fit, newdata = testing_data_1, type = "prob")[,1]
+```
+
+
+```{r}
+resamp <- resamples(list(rf = rf.fit, 
+                         gbmA = gbmA.fit))
+summary(resamp)
+```
+
+
+## Global interpretation
+### Variable importance
+
+```{r}
+set.seed(1)
+rf2.final.per <- ranger(diabetes ~ . , 
+                        training_data_1, 
+                        mtry = rf.fit$bestTune[[1]], 
+                        min.node.size = rf.fit$bestTune[[3]],
+                        splitrule = "gini",
+                        importance = "permutation",
+                        scale.permutation.importance = TRUE) 
+
+barplot(sort(ranger::importance(rf2.final.per), decreasing = FALSE), 
+        las = 2, horiz = TRUE, cex.names = 0.7,
+        col = colorRampPalette(colors = c("cyan","blue"))(8))
+
+set.seed(1)
+rf2.final.imp <- ranger(diabetes ~ . , training_data_1, 
+                        mtry = rf.fit$bestTune[[1]], 
+                        splitrule = "gini",
+                        min.node.size = rf.fit$bestTune[[3]],
+                        importance = "impurity") 
+
+barplot(sort(ranger::importance(rf2.final.imp), decreasing = FALSE), 
+        las = 2, horiz = TRUE, cex.names = 0.7,
+        col = colorRampPalette(colors = c("cyan","blue"))(8))
+```
+
+
+
+```{r}
+summary(gbmA.fit$finalModel, las = 2, cBars = 19, cex.names = 0.6)
+```
+
+### PDP 
+
+```{r}
+pdp.rf <- rf.fit |> 
+  pdp::partial(pred.var = "glucose", 
+          grid.resolution = 100,
+          prob = TRUE) |>
+  autoplot(rug = TRUE, train = training_data_1) +
+  ggtitle("Random forest") 
+
+pdp.gbm <- gbmA.fit |> 
+  pdp::partial(pred.var = "glucose", 
+          grid.resolution = 100,
+          prob = TRUE) |>
+  autoplot(rug = TRUE, train = training_data_1) +
+  ggtitle("Boosting") 
+
+gridExtra::grid.arrange(pdp.rf, pdp.gbm, nrow = 1)
+```
+
+
+
+```{r}
+roc.rf <- roc(testing_data_1$diabetes, rf.pred)
+roc.gbmA <- roc(testing_data_1$diabetes, gbmA.pred)
+
+plot(roc.rf, col = 1)
+plot(roc.gbmA, add = TRUE, col = 2)
+
+auc <- c(roc.rf$auc[1], roc.gbmA$auc[1])
+
+modelNames <- c("RF","Adaboost")
+legend("bottomright", legend = paste0(modelNames, ": ", round(auc,3)),
+       col = 1:2, lwd = 2)
+```
+
+
