@@ -7,6 +7,173 @@ output: pdf_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(rsample)
+library(caret)
+library(tidymodels)
+library(e1071) 
+library(ISLR)
+library(factoextra)
+library(gridExtra)
+library(corrplot)
+library(RColorBrewer) 
+library(gplots)
+library(jpeg)
 ```
 
 
+# 1
+
+```{r loadNsplit}
+auto <- read_csv("./auto.csv")
+#head(auto)
+
+str(auto)
+auto$origin <- as.factor(auto$origin)
+auto$cylinders <- as.factor(auto$cylinders)
+auto$mpg_cat <- as.factor(auto$mpg_cat)
+contrasts(auto$mpg_cat)
+auto <- na.omit(auto)
+
+set.seed(1)
+split_auto <- initial_split(auto, prop = 0.7)
+training_data <- training(split_auto) 
+testing_data <- testing(split_auto)
+```
+
+## a
+
+```{r}
+set.seed(1)
+linear.tune <- tune.svm(mpg_cat ~ . , 
+                        data = training_data, 
+                        kernel = "linear", 
+                        cost = exp(seq(-5,2, len = 50)),
+                        scale = TRUE)
+
+plot(linear.tune) # tuning curve
+# summary(linear.tune)
+linear.tune$best.parameters
+
+best.linear <- linear.tune$best.model
+summary(best.linear)
+
+pred.train <- predict(best.linear, newdata = training_data)
+pred.test <- predict(best.linear, newdata = testing_data)
+
+cm.train <- confusionMatrix(data = pred.train, 
+                reference = training_data$mpg_cat)
+cm.test <- confusionMatrix(data = pred.test, 
+                reference = testing_data$mpg_cat)
+
+train_error <- 1 - cm.train$overall['Accuracy']
+test_error <- 1 - cm.test$overall['Accuracy']
+```
+
+For linear SVM, train and test error rates are: `r train_error`, `r test_error`.
+
+## b
+
+```{r}
+radial.tune <- tune.svm(mpg_cat ~ . , 
+                        data = training_data, 
+                        kernel = "radial", 
+                        cost = exp(seq(1, 7, len = 50)),
+                        gamma = exp(seq(-10, -2,len = 20)))
+
+plot(radial.tune) # tuning curve
+radial.tune$best.parameters
+
+best.radial <- radial.tune$best.model
+summary(best.radial)
+
+pred.train_radial <- predict(best.radial, newdata = training_data)
+pred.test_radial <- predict(best.radial, newdata = testing_data)
+
+cm.train_radial <- confusionMatrix(data = pred.train_radial, 
+                reference = training_data$mpg_cat)
+cm.test_radial <- confusionMatrix(data = pred.test_radial, 
+                reference = testing_data$mpg_cat)
+
+train_error_radial <- 1 - cm.train_radial$overall['Accuracy']
+test_error_radial <- 1 - cm.test_radial$overall['Accuracy']
+```
+
+For radial kernelized SVM, train and test error rates are: `r train_error_radial`, `r test_error_radial`.
+
+# 2
+
+## a
+
+```{r}
+data("USArrests")
+#head(USArrests)
+```
+
+```{r}
+hc.complete <- hclust(dist(USArrests), method = "complete")
+
+fviz_dend(hc.complete, k = 3,        
+          cex = 0.3, 
+          palette = "jco", # color scheme; other palettes:"npg","aaas"...
+          color_labels_by_k = TRUE,
+          rect = TRUE, # whether to add a rectangle around groups.
+          rect_fill = TRUE,
+          rect_border = "jco",
+          labels_track_height = 2.5) 
+
+ind3.complete <- cutree(hc.complete, 3)
+state1 <- rownames(USArrests[ind3.complete == 1,])
+state1_names <- state1[!startsWith(state1, "NA")]
+
+state2 <- rownames(USArrests[ind3.complete == 2,])
+state2_names <- state2[!startsWith(state2, "NA")]
+
+state3 <- rownames(USArrests[ind3.complete == 3,])
+state3_names <- state3[!startsWith(state3, "NA")]
+```
+
+**Cluster 1 includes:** `r state1_names`
+
+**Cluster 2 includes:** `r state2_names`
+
+**Cluster 3 includes:** `r state3_names`
+
+## b
+
+```{r}
+USArrests_scale <- scale(USArrests)
+
+hc.complete_scaled <- hclust(dist(USArrests_scale), method = "complete")
+
+fviz_dend(hc.complete_scaled, k = 3,        
+          cex = 0.3, 
+          palette = "jco", # color scheme; other palettes:"npg","aaas"...
+          color_labels_by_k = TRUE,
+          rect = TRUE, # whether to add a rectangle around groups.
+          rect_fill = TRUE,
+          rect_border = "jco",
+          labels_track_height = 2.5) 
+
+ind3.complete_scaled <- cutree(hc.complete_scaled, 3)
+state1_scale <- rownames(USArrests_scale[ind3.complete_scaled == 1,])
+state1_names_scale <- state1_scale[!startsWith(state1_scale, "NA")]
+
+state2_scale <- rownames(USArrests_scale[ind3.complete_scaled == 2,])
+state2_names_scale <- state2_scale[!startsWith(state2_scale, "NA")]
+
+state3_scale <- rownames(USArrests_scale[ind3.complete_scaled == 3,])
+state3_names_scale <- state3_scale[!startsWith(state3_scale, "NA")]
+```
+
+After scaling:
+
+**Cluster 1 includes:** `r state1_names_scale`
+
+**Cluster 2 includes:** `r state2_names_scale`
+
+**Cluster 3 includes:** `r state3_names_scale`
+
+Scaling the variables changes the clustering results significantly because without scaling, variables with larger absolute ranges will dominate the Euclidean distance calculations. Thus, clustering would primarily reflect variation in high-magnitude variables, not all variables equally.
+
+Yes, they should be scaled — especially when variables are measured in different units or have different variances, which is the case in `USArrests`. This ensures that all variables contribute equally to the distance calculations, and clustering reflects balanced structure across all features.
